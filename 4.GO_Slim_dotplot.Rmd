@@ -1,16 +1,8 @@
----
-title: "4.GO_Slim"
-output: html_document
-date: "2026-10-16"
----
+```{r, message=FALSE, warning=FALSE}
+# GO Slim ORA dotplots and CSV export (BP / CC / MF)
+# Publication-style plots with adjusted p-values shown as 10^-25, 10^-20, etc.
 
-```{r}
-
-# GO Slim ORA Dotplots + CSV export (BP / CC / MF)
-
-
-# Libraries
-
+# Libraries -------------------------------------------------------------------
 suppressPackageStartupMessages({
   library(clusterProfiler)
   library(org.Hs.eg.db)
@@ -21,42 +13,36 @@ suppressPackageStartupMessages({
   library(ggplot2)
 })
 
-
-# Paths (explicit)
-
-input_dir  <- "results/03_volcano_plot"
-output_dir <- "results/04_GO_slim_ORA"
+# Paths -----------------------------------------------------------------------
+input_dir  <- "3. Volcanoplot"
+output_dir <- "4. ORA_dotplots"
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+input_file <- file.path(input_dir, "deseq2_results_filtered.csv")
 
-input_file <- file.path(input_dir,"deseq2_results_filtered.csv")
-
-# Load data
+# Load differentially expressed genes ----------------------------------------
 df <- read_csv(input_file, show_col_types = FALSE)
-
-# Use ALL genes (already filtered for significance)
 genes_ensg <- unique(df$gene_id)
 
-# Map Ensembl -> Entrez
+# Map Ensembl IDs to Entrez IDs
 gene_map <- bitr(
   genes_ensg,
   fromType = "ENSEMBL",
   toType   = "ENTREZID",
   OrgDb    = org.Hs.eg.db
 )
-
 entrez_genes <- unique(gene_map$ENTREZID)
 
-# Download & parse GO Slim generic term set
-slim_url <- "http://current.geneontology.org/ontology/subsets/goslim_generic.obo"
+# Download and parse the GO Slim generic ontology -----------------------------
+slim_url <- "https://current.geneontology.org/ontology/subsets/goslim_generic.obo"
 slim_obo <- readLines(slim_url)
-
 term_starts <- which(slim_obo == "[Term]")
 
 slim_info <- lapply(term_starts, function(i) {
   block     <- slim_obo[i:min(i + 25, length(slim_obo))]
   id_line   <- grep("^id: GO:", block, value = TRUE)[1]
-  name_line <- grep("^name: ",  block, value = TRUE)[1]
+  name_line <- grep("^name: ", block, value = TRUE)[1]
   ns_line   <- grep("^namespace: ", block, value = TRUE)[1]
+
   if (!is.na(id_line)) {
     data.frame(
       GOID      = sub("^id: ", "", id_line),
@@ -67,28 +53,26 @@ slim_info <- lapply(term_starts, function(i) {
   }
 }) %>% bind_rows()
 
-message("GO Slim terms loaded: ", nrow(slim_info),
-        " (BP=", sum(slim_info$namespace == "biological_process"),
-        ", CC=", sum(slim_info$namespace == "cellular_component"),
-        ", MF=", sum(slim_info$namespace == "molecular_function"), ")")
+message(
+  "GO Slim terms loaded: ", nrow(slim_info),
+  " (BP=", sum(slim_info$namespace == "biological_process"),
+  ", CC=", sum(slim_info$namespace == "cellular_component"),
+  ", MF=", sum(slim_info$namespace == "molecular_function"), ")"
+)
 
-# Split slim terms by ontology
 slim_by_ont <- list(
   BP = slim_info %>% filter(namespace == "biological_process"),
   CC = slim_info %>% filter(namespace == "cellular_component"),
   MF = slim_info %>% filter(namespace == "molecular_function")
 )
 
-# Build gene-to-GO mappings (all propagated annotations)
+# All propagated GO annotations
 go_data <- AnnotationDbi::toTable(org.Hs.egGO2ALLEGS)
-# Columns: gene_id, go_id, Evidence, Ontology
 
-# GO Slim ORA function (using enricher with custom term sets)
+# GO Slim ORA -----------------------------------------------------------------
 run_go_slim <- function(ont_code) {
-
   slim_ids <- slim_by_ont[[ont_code]]
-
-  ont_map <- c(BP = "BP", CC = "CC", MF = "MF")
+  ont_map  <- c(BP = "BP", CC = "CC", MF = "MF")
 
   term2gene <- go_data %>%
     filter(go_id %in% slim_ids$GOID, Ontology == ont_map[[ont_code]]) %>%
@@ -100,11 +84,12 @@ run_go_slim <- function(ont_code) {
     distinct()
 
   res <- enricher(
-    gene         = entrez_genes,
-    TERM2GENE    = term2gene,
-    TERM2NAME    = term2name,
-    pvalueCutoff = 1,
-    qvalueCutoff = 1
+    gene          = entrez_genes,
+    TERM2GENE     = term2gene,
+    TERM2NAME     = term2name,
+    pvalueCutoff  = 1,
+    pAdjustMethod = "BH",
+    qvalueCutoff  = 1
   )
 
   if (!is.null(res)) {
@@ -113,15 +98,15 @@ run_go_slim <- function(ont_code) {
   res
 }
 
-# Run GO Slim enrichment
 ego_BP <- run_go_slim("BP")
 ego_CC <- run_go_slim("CC")
 ego_MF <- run_go_slim("MF")
 
-# Function to save enrichment results as CSV
+# Export complete enrichment tables ------------------------------------------
 save_go_csv <- function(ego, ontology_label) {
+  if (is.null(ego)) return(invisible(NULL))
   ego_df <- as.data.frame(ego)
-  if (nrow(ego_df) == 0) return(NULL)
+  if (!nrow(ego_df)) return(invisible(NULL))
 
   write.csv(
     ego_df,
@@ -130,58 +115,158 @@ save_go_csv <- function(ego, ontology_label) {
   )
 }
 
-# Save CSVs
 save_go_csv(ego_BP, "Biological_Process")
 save_go_csv(ego_CC, "Cellular_Component")
 save_go_csv(ego_MF, "Molecular_Function")
 
-# Function to create dotplots
+# Publication-style dotplot settings -----------------------------------------
+plot_significant_only <- TRUE   # FALSE = top 20 regardless of significance
+plot_fdr_cutoff       <- 0.05
+plot_top_n            <- 20L
+plot_width_in         <- 4.5
+
+# Legend formatter: -log10(p.adjust) values of 5, 10, 25 are displayed
+# with plotmath as 10^-5, 10^-10, 10^-25 (superscript exponents).
+# Plotmath avoids font/encoding problems in exported PDF files.
+scientific_p_labels <- function(x) {
+  parse(text = paste0(
+    "10^{-", as.integer(round(x)), "}"
+  ))
+}
 make_go_dotplot <- function(ego, ontology_label) {
+  if (is.null(ego)) {
+    message("No GO Slim results for ", ontology_label)
+    return(invisible(NULL))
+  }
 
-  ego_df <- as.data.frame(ego)
-  if (nrow(ego_df) == 0) return(NULL)
+  go_df <- as.data.frame(ego)
+  if (!nrow(go_df)) {
+    message("No GO Slim terms for ", ontology_label)
+    return(invisible(NULL))
+  }
 
-  p <- dotplot(
-    ego,
-    showCategory = 20,
-    font.size = 12
-  ) +
-    ggtitle(paste("GO Slim", ontology_label, "Enrichment")) +
+  # Filtering is plot-only; all results remain in the exported CSVs.
+  go_df <- go_df[!is.na(go_df$p.adjust), , drop = FALSE]
+  if (isTRUE(plot_significant_only)) {
+    go_df <- go_df[go_df$p.adjust < plot_fdr_cutoff, , drop = FALSE]
+  }
+  if (!nrow(go_df)) {
+    message("No terms pass the plotting threshold for ", ontology_label)
+    return(invisible(NULL))
+  }
+
+  go_df <- head(go_df[order(go_df$p.adjust), , drop = FALSE], plot_top_n)
+
+  # Convert GeneRatio from '53/576' to 53/576.
+  go_df$GeneRatio_num <- vapply(
+    strsplit(as.character(go_df$GeneRatio), "/", fixed = TRUE),
+    function(z) {
+      if (length(z) == 2L) as.numeric(z[1]) / as.numeric(z[2])
+      else NA_real_
+    },
+    numeric(1)
+  )
+  go_df <- go_df[is.finite(go_df$GeneRatio_num), , drop = FALSE]
+  if (!nrow(go_df)) return(invisible(NULL))
+
+  # Break long GO term names over multiple lines.
+  go_df$Term <- vapply(as.character(go_df$Description), function(x) {
+    paste(strwrap(gsub("\\s+", " ", x), width = 30L), collapse = "\n")
+  }, character(1))
+
+  # Place GO terms with the largest GeneRatio at the top.
+  go_df <- go_df[order(go_df$GeneRatio_num), , drop = FALSE]
+  go_df$Term <- factor(go_df$Term, levels = unique(go_df$Term))
+
+  # Use -log10(p.adjust) for the colour scale; actual p-values are unchanged.
+  go_df$neg_log10_padj <- -log10(pmax(go_df$p.adjust, .Machine$double.xmin))
+
+  count_breaks <- pretty(range(go_df$Count), n = 3)
+  count_breaks <- count_breaks[
+    count_breaks > 0 &
+    count_breaks >= min(go_df$Count) &
+    count_breaks <= max(go_df$Count)
+  ]
+
+  plot_title <- paste("GO Slim", gsub("_", " ", ontology_label), "Enrichment")
+
+  p <- ggplot(go_df, aes(x = GeneRatio_num, y = Term)) +
+    geom_point(
+      aes(size = Count, fill = neg_log10_padj),
+      shape = 21, colour = "black", stroke = 0.28
+    ) +
+    scale_x_continuous(
+      limits = c(0, NA),
+      breaks = scales::breaks_pretty(n = 4),
+      expand = expansion(mult = c(0, 0.05))
+    ) +
+    scale_size_continuous(
+      name = "Count", range = c(1.8, 4.6), breaks = count_breaks
+    ) +
+    scale_fill_gradient(
+      name   = "Adjusted p-value",
+      low    = "#4E8DBD",    # less significant = blue
+      high   = "#D65A5A",    # more significant = red
+      breaks = function(limits) {
+        ticks <- pretty(limits, n = 5)
+        ticks[ticks >= limits[1] & ticks <= limits[2]]
+      },
+      labels = scientific_p_labels
+    ) +
+    labs(title = plot_title, x = "GeneRatio", y = NULL) +
+    guides(
+      fill = guide_colorbar(
+        order = 1, direction = "horizontal", title.position = "top",
+        barwidth = grid::unit(4.5, "cm"),
+        barheight = grid::unit(0.22, "cm")
+      ),
+      size = guide_legend(order = 2, title.position = "top", nrow = 1)
+    ) +
+    theme_bw(base_size = 8) +
     theme(
-      plot.title = element_text(hjust = 0.5, face = "bold"),
-      axis.text.y = element_text(size = 10),
-      axis.text.x = element_text(size = 10)
+      plot.title = element_text(
+        hjust = 0.5, face = "bold", size = 9, margin = margin(b = 5)
+      ),
+      axis.text.y = element_text(size = 7, colour = "black"),
+      axis.text.x = element_text(size = 7, colour = "black"),
+      axis.title.x = element_text(size = 8, margin = margin(t = 5)),
+      axis.ticks.y = element_blank(),
+      panel.grid.major = element_line(colour = "#E6E6E6", linewidth = 0.25),
+      panel.grid.minor = element_blank(),
+      panel.border = element_rect(colour = "#B7B7B7", linewidth = 0.35),
+      legend.position = "bottom",
+      legend.box = "horizontal",
+      legend.box.just = "left",
+      legend.title = element_text(size = 7),
+      legend.text = element_text(size = 6.5),
+      legend.spacing.x = grid::unit(0.15, "cm"),
+      legend.margin = margin(t = 0, r = 0, b = 0, l = 0),
+      plot.margin = margin(t = 4, r = 4, b = 3, l = 4)
     )
 
-  # Save PDF
+  plot_height_in <- max(3.5, 2.0 + 0.20 * nrow(go_df))
+  file_stub <- paste0("GOSlim_", ontology_label, "_dotplot")
+
   ggsave(
-    filename = file.path(
-      output_dir,
-      paste0("GOSlim_", ontology_label, "_dotplot.pdf")
-    ),
-    plot = p,
-    width = 6.5,
-    height = 8
+    filename = file.path(output_dir, paste0(file_stub, ".pdf")),
+    plot = p, width = plot_width_in, height = plot_height_in,
+    units = "in", device = "pdf"
+  )
+  ggsave(
+    filename = file.path(output_dir, paste0(file_stub, ".png")),
+    plot = p, width = plot_width_in, height = plot_height_in,
+    units = "in", dpi = 600, bg = "white"
   )
 
-  # Save PNG (NEW)
-  ggsave(
-    filename = file.path(
-      output_dir,
-      paste0("GOSlim_", ontology_label, "_dotplot.png")
-    ),
-    plot = p,
-    width = 6.5,
-    height = 8,
-    dpi = 300
-  )
+  message("Saved ", ontology_label, " plot (", nrow(go_df), " GO terms).")
+  invisible(p)
 }
 
-# Generate dotplots
+# Export BP, CC and MF dotplots as PDF + high-resolution PNG -----------------
 make_go_dotplot(ego_BP, "Biological_Process")
 make_go_dotplot(ego_CC, "Cellular_Component")
 make_go_dotplot(ego_MF, "Molecular_Function")
 
-message("GO Slim enrichment analysis complete. Dotplots + CSVs saved to: ", output_dir)
+message("GO Slim enrichment complete. Results saved to: ", output_dir)
 
 ```
