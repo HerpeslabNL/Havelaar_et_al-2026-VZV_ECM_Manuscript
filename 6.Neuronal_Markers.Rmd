@@ -1,0 +1,1654 @@
+---
+title: "6.Neuronal_Markers"
+output: html_document
+date: "2026-10-16"
+---
+
+```{r}
+# iHD10.6 -> dHD10.6 NEURONAL DIFFERENTIATION MARKER HEATMAP
+
+# Groups:
+#   DRG / sensory neuron
+#   Nociceptive
+#   Peripheral neuron
+#   Pan-neuronal
+#   Cell cycle
+
+# 1. SETTINGS
+expression_file <-
+  "data_or_results/R_Analysis_ORA/VZVvsMock.complete_1.xlsx"
+
+expression_sheet <- "Ordered_by_FC"
+
+output_dir <-
+  "data_or_results/R_Analysis_ORA/7._DRG_neuronal_markers/Output/Neuron_marker_classes"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+# 2. SAMPLES
+
+samples <- data.frame(
+
+  column = c(
+    "norm.HD10.und_1",
+    "norm.HD10.und_2",
+    "norm.HD10.und_3",
+    "norm.HD10.diff_1",
+    "norm.HD10.diff_2",
+    "norm.HD10.diff_3"
+  ),
+
+  label = c(
+    "iHD10.6 1",
+    "iHD10.6 2",
+    "iHD10.6 3",
+    "dHD10.6 1",
+    "dHD10.6 2",
+    "dHD10.6 3"
+  ),
+
+  group = c(
+    rep("iHD10.6", 3),
+    rep("dHD10.6", 3)
+  ),
+
+  stringsAsFactors = FALSE
+)
+
+# 3. MARKER SETS = manually picked from CellMarker 3.0
+
+
+marker_sets <- list(
+
+
+  "DRG / sensory neuron" = c(
+
+    "ISL1",
+    "POU4F1",
+
+    "NTRK1",
+    "NTRK2",
+    "NTRK3",
+
+    "PRDM12",
+
+    "RUNX1",
+    "RUNX3",
+
+    "NEUROD1",
+    "NEUROD4",
+
+    "TLX3",
+
+    "ERBB3",
+    "ERBB4",
+
+    "SLC17A6",
+
+    "KCNQ2",
+    "KCNQ3",
+
+    "PIEZO2"
+  ),
+
+
+  "Nociceptive" = c(
+
+    "TRPV1",
+    "TRPA1",
+
+    "SCN9A",
+    "SCN10A",
+    "SCN11A",
+
+    "P2RX3",
+
+    "TAC1",
+    "CALCA",
+    "CALCB",
+
+    "NTS",
+    "SST",
+    "GAL",
+    "PENK",
+    "NPY",
+
+    "GFRA1",
+    "GFRA2",
+    "GFRA3",
+
+    "RET",
+
+    "ASIC3",
+
+    "TRPM8",
+
+    "HTR3A",
+
+    "CHRNA3",
+
+    "MRGPRD",
+    "MRGPRX1"
+  ),
+
+
+  "Peripheral neuron" = c(
+
+    "PRPH",
+
+    "PLP1",
+
+    "GAP43",
+
+    "UCHL1",
+
+    "INA",
+
+    "NEFH",
+    "NEFM",
+    "NEFL",
+
+    "STMN2",
+
+    "DPYSL3",
+
+    "NCAM1",
+
+    "CNTN1",
+    "CNTN2",
+
+    "L1CAM",
+
+    "SEMA3A",
+
+    "NRP1",
+    "NRP2"
+  ),
+
+
+  "Pan-neuronal" = c(
+
+    "TUBB3",
+
+    "RBFOX3",
+
+    "MAP2",
+    "MAPT",
+
+    "SNAP25",
+
+    "SYN1",
+    "SYN2",
+
+    "SYT1",
+
+    "SYP",
+
+    "DLG4",
+
+    "NEFL",
+    "NEFM",
+    "NEFH",
+
+    "ELAVL3",
+    "ELAVL4",
+
+    "ENO2",
+
+    "STMN2",
+
+    "GAP43",
+
+    "NCAM1",
+
+    "VAMP2",
+
+    "STX1A",
+    "STX1B"
+  ),
+
+
+  "Cell cycle" = c(
+
+    "MKI67",
+
+    "PCNA",
+
+    "MCM2",
+    "MCM3",
+    "MCM4",
+    "MCM5",
+    "MCM6",
+    "MCM7",
+
+    "CCNA2",
+
+    "CCNB1",
+    "CCNB2",
+
+    "CCNE1",
+    "CCNE2",
+
+    "CDK1",
+    "CDK2",
+
+    "CDC20",
+    "CDC25A",
+    "CDC25B",
+    "CDC25C",
+
+    "CDCA2",
+    "CDCA3",
+    "CDCA5",
+    "CDCA7",
+    "CDCA8",
+
+    "TOP2A",
+
+    "BIRC5",
+
+    "AURKA",
+    "AURKB",
+
+    "PLK1",
+
+    "BUB1",
+    "BUB1B",
+
+    "MAD2L1",
+
+    "NDC80",
+
+    "CENPA",
+    "CENPE",
+    "CENPF",
+
+    "KIF11",
+    "KIF20A",
+    "KIF23",
+
+    "TPX2",
+
+    "UBE2C",
+
+    "RRM2",
+
+    "TYMS"
+  )
+)
+
+# 4. CATEGORY ORDER
+
+category_order <- c(
+
+  "DRG / sensory neuron",
+
+  "Nociceptive",
+
+  "Peripheral neuron",
+
+  "Pan-neuronal",
+
+  "Cell cycle"
+
+)
+
+# 6. FIGURE SETTINGS
+
+cell_width  <- 18
+cell_height <- 13
+
+fontsize_gene   <- 9
+fontsize_sample <- 9
+fontsize_group  <- 9
+fontsize_legend <- 8
+
+figure_width  <- 8
+figure_height <- NULL
+
+png_dpi <- 600
+
+cluster_distance <- "euclidean"
+cluster_method   <- "complete"
+
+z_limit <- 2.5
+
+# LEFT GROUP ANNOTATION
+# Width reserved for text + vertical group lines
+group_annotation_width <- 1.55   # inches
+
+# Distance between group text and vertical line
+group_text_offset <- 0.10
+
+# Thickness of vertical line
+group_line_width <- 1.0
+
+# Color
+group_line_color <- "black"
+
+# Category labels
+group_labels <- c(
+
+  "DRG / sensory neuron" = "DRG / sensory",
+
+  "Nociceptive" = "Nociceptive",
+
+  "Peripheral neuron" = "Peripheral neuron",
+
+  "Pan-neuronal" = "Pan-neuronal",
+
+  "Cell cycle" = "Cell cycle"
+
+)
+
+# 7. PACKAGES
+
+cran_packages <- c(
+  "readxl",
+  "pheatmap",
+  "RColorBrewer",
+  "gtable"
+)
+
+bioc_packages <- c(
+  "AnnotationDbi",
+  "org.Hs.eg.db"
+)
+
+
+for (pkg in cran_packages) {
+
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+
+    install.packages(
+      pkg,
+      repos = "https://cloud.r-project.org"
+    )
+
+  }
+
+}
+
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+
+  install.packages(
+    "BiocManager",
+    repos = "https://cloud.r-project.org"
+  )
+
+}
+
+
+for (pkg in bioc_packages) {
+
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+
+    BiocManager::install(
+      pkg,
+      ask = FALSE,
+      update = FALSE
+    )
+
+  }
+
+}
+
+# 8. OUTPUT DIRECTORY
+dir.create(
+  output_dir,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+
+# 9. READ EXPRESSION DATA
+
+message("Reading expression workbook...")
+
+
+expr <- as.data.frame(
+
+  readxl::read_excel(
+
+    expression_file,
+
+    sheet = expression_sheet,
+
+    .name_repair = "minimal"
+
+  )
+
+)
+
+
+if (!all(c("gene_id", "gene_name") %in% names(expr))) {
+
+  stop(
+    "Expression workbook must contain gene_id and gene_name."
+  )
+
+}
+
+
+missing_sample_columns <-
+  setdiff(
+    samples$column,
+    names(expr)
+  )
+
+
+if (length(missing_sample_columns)) {
+
+  stop(
+
+    "Missing sample columns: ",
+
+    paste(
+      missing_sample_columns,
+      collapse = ", "
+    )
+
+  )
+
+}
+
+
+expr$gene_id <-
+  sub(
+    "\\.[0-9]+$",
+    "",
+    as.character(expr$gene_id)
+  )
+
+
+expr <-
+  expr[
+    grepl(
+      "^ENSG[0-9]+$",
+      expr$gene_id
+    ),
+    ,
+    drop = FALSE
+  ]
+
+
+# 10. MAP ENSEMBL -> SYMBOL
+message("Mapping Ensembl identifiers...")
+
+
+human_db <-
+  org.Hs.eg.db::org.Hs.eg.db
+
+
+valid_ids <-
+  intersect(
+
+    unique(expr$gene_id),
+
+    AnnotationDbi::keys(
+      human_db,
+      keytype = "ENSEMBL"
+    )
+
+  )
+
+
+mapping <-
+  AnnotationDbi::select(
+
+    human_db,
+
+    keys = valid_ids,
+
+    keytype = "ENSEMBL",
+
+    columns = "SYMBOL"
+
+  )
+
+
+mapping <-
+  mapping[
+    !is.na(mapping$SYMBOL),
+    ,
+    drop = FALSE
+  ]
+
+
+mapping <- unique(mapping)
+
+
+symbol_by_id <-
+  split(
+    mapping$SYMBOL,
+    mapping$ENSEMBL
+  )
+
+
+expr$SYMBOL <-
+  vapply(
+
+    expr$gene_id,
+
+    function(id) {
+
+      x <- unique(
+        symbol_by_id[[id]]
+      )
+
+      x <- x[
+        !is.na(x)
+      ]
+
+
+      if (length(x)) {
+
+        return(
+          x[1]
+        )
+
+      }
+
+
+      j <- match(
+        id,
+        expr$gene_id
+      )
+
+
+      fallback <-
+        as.character(
+          expr$gene_name[j]
+        )
+
+
+      if (
+        !is.na(fallback) &&
+        nzchar(fallback)
+      ) {
+
+        return(fallback)
+
+      }
+
+
+      NA_character_
+
+    },
+
+    FUN.VALUE = character(1)
+
+  )
+
+
+expr$SYMBOL <-
+  toupper(expr$SYMBOL)
+
+# 11. CLEAN MARKER SETS
+marker_sets <-
+  marker_sets[
+    category_order
+  ]
+
+
+marker_sets <-
+  lapply(
+    marker_sets,
+    toupper
+  )
+
+
+# Remove accidental duplicates within each marker set
+marker_sets <-
+  lapply(
+    marker_sets,
+    unique
+  )
+
+# 12. REMOVE DUPLICATES BETWEEN CATEGORIES
+# First category containing a gene gets priority.
+
+already_used <- character(0)
+
+
+for (category in category_order) {
+
+
+  genes <-
+    marker_sets[[category]]
+
+
+  genes <-
+    setdiff(
+      genes,
+      already_used
+    )
+
+
+  marker_sets[[category]] <-
+    genes
+
+
+  already_used <-
+    union(
+      already_used,
+      genes
+    )
+
+}
+
+# 13. BUILD MARKER TABLE
+marker_table <-
+  do.call(
+
+    rbind,
+
+    lapply(
+
+      category_order,
+
+      function(category) {
+
+        data.frame(
+
+          marker =
+            marker_sets[[category]],
+
+          category =
+            category,
+
+          stringsAsFactors = FALSE
+
+        )
+
+      }
+
+    )
+
+  )
+
+
+rownames(marker_table) <- NULL
+
+
+utils::write.csv(
+
+  marker_table,
+
+  file.path(
+    output_dir,
+    "requested_marker_panel.csv"
+  ),
+
+  row.names = FALSE
+
+)
+
+# 14. FIND AVAILABLE MARKERS
+
+marker_table$available <-
+  marker_table$marker %in%
+  expr$SYMBOL
+
+
+available_markers <-
+  marker_table[
+    marker_table$available,
+    ,
+    drop = FALSE
+  ]
+
+
+missing_markers <-
+  marker_table[
+    !marker_table$available,
+    ,
+    drop = FALSE
+  ]
+
+
+utils::write.csv(
+
+  missing_markers,
+
+  file.path(
+    output_dir,
+    "markers_not_found_in_expression_matrix.csv"
+  ),
+
+  row.names = FALSE
+
+)
+
+
+message(
+  "Requested markers: ",
+  nrow(marker_table)
+)
+
+message(
+  "Available markers: ",
+  nrow(available_markers)
+)
+
+message(
+  "Missing markers: ",
+  nrow(missing_markers)
+)
+
+# 15. HANDLE DUPLICATE EXPRESSION SYMBOLS
+
+sample_matrix_all <-
+  as.matrix(
+    expr[
+      ,
+      samples$column,
+      drop = FALSE
+    ]
+  )
+
+
+storage.mode(sample_matrix_all) <-
+  "numeric"
+
+
+expr$mean_selected_expression <-
+  rowMeans(
+    sample_matrix_all,
+    na.rm = TRUE
+  )
+
+
+expr <-
+  expr[
+
+    order(
+      expr$SYMBOL,
+      -expr$mean_selected_expression
+    ),
+
+    ,
+
+    drop = FALSE
+
+  ]
+
+
+expr <-
+  expr[
+    !duplicated(expr$SYMBOL),
+    ,
+    drop = FALSE
+  ]
+
+# 16. BUILD EXPRESSION MATRIX
+available_markers <-
+  available_markers[
+    available_markers$marker %in%
+      expr$SYMBOL,
+    ,
+    drop = FALSE
+  ]
+
+
+idx <-
+  match(
+    available_markers$marker,
+    expr$SYMBOL
+  )
+
+
+selected_expr <-
+  expr[
+    idx,
+    ,
+    drop = FALSE
+  ]
+
+
+mat <-
+  as.matrix(
+
+    selected_expr[
+      ,
+      samples$column,
+      drop = FALSE
+    ]
+
+  )
+
+
+storage.mode(mat) <-
+  "numeric"
+
+
+rownames(mat) <-
+  available_markers$marker
+
+
+colnames(mat) <-
+  samples$label
+
+# 17. REMOVE NON-FINITE ROWS
+finite_rows <-
+  apply(
+
+    mat,
+
+    1,
+
+    function(x)
+      all(is.finite(x))
+
+  )
+
+
+mat <-
+  mat[
+    finite_rows,
+    ,
+    drop = FALSE
+  ]
+
+
+available_markers <-
+  available_markers[
+    finite_rows,
+    ,
+    drop = FALSE
+  ]
+
+# 18. PER-GENE Z SCORE
+zmat <-
+  t(
+    scale(
+      t(mat)
+    )
+  )
+
+
+zmat[
+  !is.finite(zmat)
+] <- 0
+
+
+# Clip extreme values
+
+zmat[
+  zmat > z_limit
+] <- z_limit
+
+
+zmat[
+  zmat < -z_limit
+] <- -z_limit
+
+# 19. CLUSTER WITHIN EACH CATEGORY
+ordered_genes <- character(0)
+
+category_sizes <- integer(0)
+
+
+for (category in category_order) {
+
+
+  genes <-
+    available_markers$marker[
+      available_markers$category ==
+        category
+    ]
+
+
+  genes <-
+    intersect(
+      genes,
+      rownames(zmat)
+    )
+
+
+  if (!length(genes)) {
+
+    next
+
+  }
+
+
+  if (length(genes) >= 2) {
+
+
+    category_matrix <-
+      zmat[
+        genes,
+        ,
+        drop = FALSE
+      ]
+
+
+    d <-
+      stats::dist(
+
+        category_matrix,
+
+        method =
+          cluster_distance
+
+      )
+
+
+    hc <-
+      stats::hclust(
+
+        d,
+
+        method =
+          cluster_method
+
+      )
+
+
+    genes <-
+      genes[
+        hc$order
+      ]
+
+  }
+
+
+  ordered_genes <-
+    c(
+      ordered_genes,
+      genes
+    )
+
+
+  category_sizes[category] <-
+    length(genes)
+
+}
+
+
+zmat <-
+  zmat[
+    ordered_genes,
+    ,
+    drop = FALSE
+  ]
+
+
+mat <-
+  mat[
+    ordered_genes,
+    ,
+    drop = FALSE
+  ]
+
+# 20. COLUMN ANNOTATION
+
+annotation_col <-
+  data.frame(
+
+    Condition =
+      factor(
+
+        samples$group,
+
+        levels = c(
+          "iHD10.6",
+          "dHD10.6"
+        )
+
+      ),
+
+    row.names =
+      samples$label
+
+  )
+
+
+annotation_colors <-
+  list(
+
+    Condition = c(
+
+      "iHD10.6" =
+        "#E69F00",
+
+      "dHD10.6" =
+        "#009E73"
+
+    )
+
+  )
+
+# 21. CATEGORY GAPS
+
+category_sizes <-
+  category_sizes[
+    category_sizes > 0
+  ]
+
+
+if (length(category_sizes) > 1) {
+
+  gaps_row <-
+    cumsum(category_sizes)[
+      -length(category_sizes)
+    ]
+
+} else {
+
+  gaps_row <- NULL
+
+}
+
+# 22. HEATMAP COLOR SCALE
+heat_colors <-
+  grDevices::colorRampPalette(
+
+    rev(
+
+      RColorBrewer::brewer.pal(
+        11,
+        "RdBu"
+      )
+
+    )
+
+  )(100)
+
+
+breaks <-
+  seq(
+    -z_limit,
+    z_limit,
+    length.out = 101
+  )
+
+# 23. FIGURE HEIGHT
+if (is.null(figure_height)) {
+
+  figure_height <-
+    max(
+
+      6,
+
+      nrow(zmat) *
+        cell_height / 72 +
+        2.4
+
+    )
+
+}
+
+# 24. CREATE HEATMAP
+# NOTE:
+# No annotation_row is used anymore.
+# manually draw the group annotation next to the gene names.
+
+hm <-
+  pheatmap::pheatmap(
+
+    zmat,
+
+    scale = "none",
+
+    color = heat_colors,
+
+    breaks = breaks,
+
+    annotation_col =
+      annotation_col,
+
+    annotation_colors =
+      annotation_colors,
+
+    cluster_rows = FALSE,
+
+    cluster_cols = FALSE,
+
+    gaps_row = gaps_row,
+
+    gaps_col = 3,
+
+    treeheight_row = 0,
+
+    treeheight_col = 0,
+
+    cellwidth =
+      cell_width,
+
+    cellheight =
+      cell_height,
+
+    show_rownames = TRUE,
+
+    show_colnames = TRUE,
+
+    fontsize_row =
+      fontsize_gene,
+
+    fontsize_col =
+      fontsize_sample,
+
+    fontsize =
+      fontsize_legend,
+
+    angle_col = "45",
+
+    border_color = NA,
+
+    main = NA,
+
+    legend = TRUE,
+
+    annotation_legend = TRUE,
+
+    silent = TRUE
+
+  )
+
+
+# 25. ADD CUSTOM LEFT-SIDE GROUP ANNOTATION
+gt <- hm$gtable
+
+
+# Find the actual heatmap matrix location
+matrix_index <-
+  which(
+    gt$layout$name == "matrix"
+  )
+
+
+if (length(matrix_index) != 1) {
+
+  stop(
+    "Could not uniquely identify the heatmap matrix in the pheatmap gtable."
+  )
+
+}
+
+
+matrix_row <-
+  gt$layout$t[
+    matrix_index
+  ]
+
+
+matrix_col <-
+  gt$layout$l[
+    matrix_index
+  ]
+
+# Insert new column immediately LEFT of the heatmap
+
+gt <-
+  gtable::gtable_add_cols(
+
+    gt,
+
+    widths =
+      grid::unit(
+        group_annotation_width,
+        "in"
+      ),
+
+    pos =
+      matrix_col - 1
+
+  )
+
+
+# After inserting a column, locate the matrix again.
+
+matrix_index <-
+  which(
+    gt$layout$name == "matrix"
+  )
+
+
+matrix_row <-
+  gt$layout$t[
+    matrix_index
+  ]
+
+
+matrix_col <-
+  gt$layout$l[
+    matrix_index
+  ]
+
+
+# 26. BUILD CUSTOM GROUP GROBS
+total_genes <-
+  nrow(zmat)
+# Cumulative starting/ending positions
+
+group_end <-
+  cumsum(
+    category_sizes
+  )
+
+
+group_start <-
+  c(
+    1,
+    head(group_end, -1) + 1
+  )
+# Convert row positions to NPC coordinates.
+#
+# pheatmap row 1 is at the TOP, whereas NPC y=0 is at the bottom.
+
+row_height_npc <-
+  1 / total_genes
+
+
+annotation_grob <-
+  grid::gTree()
+
+
+for (i in seq_along(category_sizes)) {
+
+
+  category <-
+    names(category_sizes)[i]
+
+
+  start_row <-
+    group_start[i]
+
+
+  end_row <-
+    group_end[i]
+
+  # Calculate category vertical extent
+  y_top <-
+    1 -
+    (start_row - 1) /
+    total_genes
+
+
+  y_bottom <-
+    1 -
+    end_row /
+    total_genes
+
+
+  y_middle <-
+    (
+      y_top +
+      y_bottom
+    ) / 2
+
+  # Vertical line
+  line <-
+    grid::segmentsGrob(
+
+      x0 =
+        grid::unit(
+          0.96,
+          "npc"
+        ),
+
+      x1 =
+        grid::unit(
+          0.96,
+          "npc"
+        ),
+
+      y0 =
+        grid::unit(
+          y_bottom,
+          "npc"
+        ),
+
+      y1 =
+        grid::unit(
+          y_top,
+          "npc"
+        ),
+
+      gp =
+        grid::gpar(
+
+          col =
+            group_line_color,
+
+          lwd =
+            group_line_width,
+
+          lineend =
+            "butt"
+
+        )
+
+    )
+
+  # Category text
+ 
+  label <-
+    group_labels[
+      category
+    ]
+
+
+  if (
+    is.na(label) ||
+    !nzchar(label)
+  ) {
+
+    label <- category
+
+  }
+
+
+  text_grob <-
+    grid::textGrob(
+
+      label = label,
+
+      x =
+        grid::unit(
+          0.88,
+          "npc"
+        ),
+
+      y =
+        grid::unit(
+          y_middle,
+          "npc"
+        ),
+
+      just =
+        c(
+          "right",
+          "centre"
+        ),
+
+      gp =
+        grid::gpar(
+
+          fontsize =
+            fontsize_group,
+
+          col =
+            "black",
+
+          fontface =
+            "plain"
+
+        )
+
+    )
+
+
+  annotation_grob <-
+    grid::gTree(
+
+      children =
+        grid::gList(
+
+          annotation_grob,
+
+          line,
+
+          text_grob
+
+        )
+
+    )
+
+}
+
+# 27. ADD ANNOTATION GROBS TO GTABLE
+gt <-
+  gtable::gtable_add_grob(
+
+    gt,
+
+    grobs =
+      annotation_grob,
+
+    t =
+      matrix_row,
+
+    b =
+      matrix_row,
+
+    l =
+      matrix_col - 1,
+
+    r =
+      matrix_col - 1,
+
+    name =
+      "marker_group_annotation",
+
+    clip =
+      "off"
+
+  )
+
+# 28. OUTPUT FILES
+
+pdf_file <-
+  file.path(
+
+    output_dir,
+
+    "HD10.6_neuronal_marker_heatmap_group_lines.pdf"
+
+  )
+
+
+png_file <-
+  file.path(
+
+    output_dir,
+
+    "HD10.6_neuronal_marker_heatmap_group_lines.png"
+
+  )
+
+
+# 29. SAVE PDF
+grDevices::pdf(
+
+  pdf_file,
+
+  width =
+    figure_width,
+
+  height =
+    figure_height,
+
+  useDingbats =
+    FALSE
+
+)
+
+
+grid::grid.newpage()
+
+grid::grid.draw(
+  gt
+)
+
+
+grDevices::dev.off()
+
+# 30. SAVE 600-DPI PNG
+grDevices::png(
+
+  png_file,
+
+  width =
+    figure_width,
+
+  height =
+    figure_height,
+
+  units =
+    "in",
+
+  res =
+    png_dpi
+
+)
+
+
+grid::grid.newpage()
+
+grid::grid.draw(
+  gt
+)
+
+
+grDevices::dev.off()
+
+# 31. DISPLAY IN RSTUDIO
+if (interactive()) {
+
+  grid::grid.newpage()
+
+  grid::grid.draw(
+    gt
+  )
+
+}
+
+# 32. EXPORT FINAL GENE ORDER
+gene_to_category <-
+  setNames(
+
+    available_markers$category,
+
+    available_markers$marker
+
+  )
+
+
+final_gene_table <-
+  data.frame(
+
+    order =
+      seq_len(
+        nrow(zmat)
+      ),
+
+    gene =
+      rownames(zmat),
+
+    category =
+      gene_to_category[
+        rownames(zmat)
+      ],
+
+    stringsAsFactors =
+      FALSE
+
+  )
+
+
+utils::write.csv(
+
+  final_gene_table,
+
+  file.path(
+
+    output_dir,
+
+    "heatmap_final_gene_order.csv"
+
+  ),
+
+  row.names =
+    FALSE
+
+)
+
+# 33. EXPORT Z-SCORE MATRIX
+z_export <-
+  data.frame(
+
+    gene =
+      rownames(zmat),
+
+    category =
+      gene_to_category[
+        rownames(zmat)
+      ],
+
+    zmat,
+
+    check.names =
+      FALSE
+
+  )
+
+
+utils::write.csv(
+
+  z_export,
+
+  file.path(
+
+    output_dir,
+
+    "heatmap_row_Z_scores.csv"
+
+  ),
+
+  row.names =
+    FALSE
+
+)
+
+# 34. SUMMARY
+category_summary <-
+  data.frame(
+
+    category =
+      names(category_sizes),
+
+    genes_plotted =
+      as.integer(
+        category_sizes
+      ),
+
+    stringsAsFactors =
+      FALSE
+
+  )
+
+
+utils::write.csv(
+
+  category_summary,
+
+  file.path(
+
+    output_dir,
+
+    "heatmap_category_summary.csv"
+
+  ),
+
+  row.names =
+    FALSE
+
+)
+
+
+message("")
+message("============================================================")
+message("DONE")
+message("============================================================")
+message("")
+message("PDF: ", pdf_file)
+message("PNG: ", png_file)
+message("")
+message("Genes plotted: ", nrow(zmat))
+message("")
+print(category_summary)
+
+```

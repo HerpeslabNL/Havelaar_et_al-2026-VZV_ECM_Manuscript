@@ -1,0 +1,130 @@
+---
+title: "2. PCA"
+output: html_document
+date: "2026-10-16"
+---
+
+```{r setup, include=FALSE}
+# =============================================================================
+# Update paths and sample names in the USER SETTINGS section as needed.
+# =============================================================================
+library(tidyverse)
+library(ggplot2)
+library(ggrepel)
+
+# 1. USER SETTINGS
+
+input_file <- "data/salmon.merged.gene_counts.tsv"
+gene_column <- "gene_id"
+
+samples_to_use <- c(
+  "HD10-diff_1","HD10-diff_2","HD10-diff_3",
+  "HD10-und_1","HD10-und_2","HD10-und_3",
+  "HD10-mockVZV_1","HD10-mockVZV_2","HD10-mockVZV_3",
+  "HD10-VZV_1","HD10-VZV_2","HD10-VZV_3"
+)
+
+top_variable_genes <- 500
+
+# Save in same folder as input
+output_plot <- "results/PCA_plot.pdf"
+
+# 2. LOAD DATA
+
+expr <- read_tsv(input_file)
+
+expr_matrix <- expr %>%
+  column_to_rownames(gene_column) %>%
+  select(all_of(samples_to_use))
+
+# Optional log transform (recommended for counts)
+expr_matrix <- log2(expr_matrix + 1)
+
+# 3. FILTER MOST VARIABLE GENES
+
+gene_variance <- apply(expr_matrix, 1, var)
+
+top_genes <- names(sort(gene_variance, decreasing = TRUE))[1:top_variable_genes]
+
+expr_matrix <- expr_matrix[top_genes, ]
+
+# 4. RUN PCA
+
+pca <- prcomp(t(expr_matrix), scale. = TRUE)
+
+pca_df <- as.data.frame(pca$x)
+pca_df$sample <- rownames(pca_df)
+
+# 4b. CUSTOM SAMPLE LABELS
+
+custom_labels <- c(
+  "HD10-diff_1" = "Diff 1",
+  "HD10-diff_2" = "Diff 2",
+  "HD10-diff_3" = "Diff 3",
+  "HD10-und_1" = "Undiff 1",
+  "HD10-und_2" = "Undiff 2",
+  "HD10-und_3" = "Undiff 3",
+  "HD10-mockVZV_1" = "Mock 1",
+  "HD10-mockVZV_2" = "Mock 2",
+  "HD10-mockVZV_3" = "Mock 3",
+  "HD10-VZV_1" = "VZV 1",
+  "HD10-VZV_2" = "VZV 2",
+  "HD10-VZV_3" = "VZV 3"
+)
+
+# Add custom labels to PCA dataframe
+pca_df$label <- custom_labels[pca_df$sample]
+
+# 5. ASSIGN GROUPS FROM SAMPLE NAMES
+
+pca_df <- pca_df %>%
+  mutate(group = case_when(
+    str_detect(sample, "diff") ~ "Differentiated",
+    str_detect(sample, "und") ~ "Undifferentiated",
+    str_detect(sample, "mockVZV") ~ "Mock",
+    str_detect(sample, "VZV") ~ "VZV infected",
+    TRUE ~ "Other"
+  ))
+
+# 6. VARIANCE EXPLAINED
+
+var_explained <- (pca$sdev^2) / sum(pca$sdev^2)
+
+pc1_var <- round(var_explained[1] * 100, 1)
+pc2_var <- round(var_explained[2] * 100, 1)
+
+# 7. PLOT PCA
+
+p <- ggplot(pca_df, aes(x = PC1, y = PC2, color = group)) +
+  geom_point(size = 4) +
+  geom_text_repel(aes(label = label), size = 3) +
+  scale_color_manual(values = c(
+    "Differentiated" = "red3",
+    "Undifferentiated" = "blue3",
+    "Mock" = "gray23",
+    "VZV infected" = "forestgreen"
+  )) +
+  theme_classic() +
+  labs(
+    x = paste0("PC1 (", pc1_var, "%)"),
+    y = paste0("PC2 (", pc2_var, "%)"),
+    color = "Group"
+  )
+
+# 8. SAVE PLOT
+
+# Save PDF
+ggsave("results/PCA_plot.pdf", p, width = 5, height = 3)
+
+# Save high-resolution PNG
+ggsave(
+  "results/PCA_plot.png",
+  p,
+  width = 5,
+  height = 3,
+  dpi = 600
+)
+
+print(p)
+
+```

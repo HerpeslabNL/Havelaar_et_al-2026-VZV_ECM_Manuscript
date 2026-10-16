@@ -1,0 +1,205 @@
+---
+title: "3.VolcanoPlot"
+output: html_document
+date: "2026-10-16"
+---
+
+```{r}
+# =============================================================================
+# Update paths and sample names in the USER SETTINGS section as needed.
+# =============================================================================
+library(EnhancedVolcano)
+library(dplyr)
+library(ggplot2)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+
+# 1. Map ENSG IDs to gene symbols
+
+mapGenes <- function(gene_ids) {
+  gene_ids <- as.character(gene_ids)   # Ensure keys are character
+  mapping <- AnnotationDbi::select(
+    org.Hs.eg.db,
+    keys      = gene_ids,
+    keytype   = "ENSEMBL",
+    columns   = c("SYMBOL")
+  )
+  gene_symbols <- mapping$SYMBOL[match(gene_ids, mapping$ENSEMBL)]
+  gene_symbols[is.na(gene_symbols)] <- gene_ids[is.na(gene_symbols)]
+  return(gene_symbols)
+}
+
+# 2. Get ECM genes from GO:0031012
+
+getECMGenes <- function() {
+  ecm_genes <- AnnotationDbi::select(
+    org.Hs.eg.db,
+    keys    = "GO:0031012",
+    keytype = "GOALL",
+    columns = "SYMBOL"
+  )$SYMBOL
+  unique(ecm_genes[!is.na(ecm_genes)])
+}
+
+# 3. Main function
+getInfo <- function(obj, pcut = 0.2, FC = 0.5, map, save_plot = TRUE, plot_file = NULL) {
+
+  # Ensure gene_id is character
+  obj$gene_id <- as.character(obj$gene_id)
+
+  # Ensure padj_manual_noNA exists
+  if(!"padj_manual_noNA" %in% colnames(obj)) {
+    if("padj" %in% colnames(obj)) {
+      obj$padj_manual_noNA <- obj$padj
+    } else {
+      stop("No padj or padj_manual_noNA column found in the input object")
+    }
+  }
+
+  # Map ENSG IDs → SYMBOL
+  obj$gene_name <- mapGenes(obj$gene_id)
+
+  # Get ECM genes
+  ecm_genes <- getECMGenes()
+
+  # 4. Assign gene categories
+  obj <- obj %>%
+    mutate(
+      category = case_when(
+        gene_name == "CCL2" ~ "CCL2",
+        gene_name %in% ecm_genes ~ "ECM",
+        log2FoldChange > FC & padj_manual_noNA < pcut  ~ "up",
+        log2FoldChange < -FC & padj_manual_noNA < pcut ~ "down",
+        TRUE ~ "not_significant"
+      ),
+      direction = case_when(
+        log2FoldChange > FC & padj_manual_noNA < pcut  ~ "up",
+        log2FoldChange < -FC & padj_manual_noNA < pcut ~ "down",
+        TRUE ~ "not_significant"
+      )
+    )
+
+  # Bring CCL2 to front (draw last)
+  obj <- obj %>% arrange(category != "CCL2")
+  obj$gene_name <- as.character(obj$gene_name)
+
+  # Print summary stats
+  message("Upregulated genes: ", sum(obj$direction == "up"))
+  message("Downregulated genes: ", sum(obj$direction == "down"))
+  message("ECM pathway genes: ", sum(obj$category == "ECM"))
+  message("CCL2 highlighted: ", sum(obj$category == "CCL2"))
+  message("Not significant: ", sum(obj$direction == "not_significant"))
+
+  # 5. Volcano plot
+  volcano <- EnhancedVolcano(
+    obj,
+    lab = obj$gene_name,
+    x = "log2FoldChange",
+    y = "padj_manual_noNA",
+    pCutoff = pcut,
+    FCcutoff = FC,
+    drawConnectors = FALSE,
+    xlim = c(-11, 11),
+    ylim = c(0, 80),
+    selectLab = c("CCL2", ecm_genes),
+    colCustom = c(
+      "up" = "red",
+      "down" = "blue",
+      "ECM" = "gold",
+      "CCL2" = "maroon3",
+      "not_significant" = "gray"
+    )[obj$category]
+  )
+
+  print(volcano)
+
+  # 6. Save volcano plots
+  if(save_plot) {
+
+    if(is.null(plot_file)) {
+      plot_file <- file.path(map, "volcano_plot")
+    }
+
+    ggsave(
+      filename = paste0(plot_file, ".png"),
+      plot = volcano,
+      width = 8,
+      height = 10,
+      units = "in",
+      dpi = 600
+    )
+
+    ggsave(
+      filename = paste0(plot_file, ".pdf"),
+      plot = volcano,
+      width = 8,
+      height = 10,
+      units = "in"
+    )
+
+    message("Volcano plot saved to PNG and PDF at: ", plot_file)
+  }
+
+
+# 7. Save output table (FULL)
+output_file <- file.path(map, "deseq2_results_with_direction.csv")
+write.csv(obj, output_file, row.names = FALSE)
+message("All results saved to: ", output_file)
+
+
+# 8. Save filtered subset (significant up/down only)
+
+filtered_subset <- obj %>%
+  filter(direction != "not_significant")
+
+filtered_file <- file.path(map, "deseq2_results_filtered.csv")
+
+write.csv(filtered_subset, filtered_file, row.names = FALSE)
+
+message("Filtered results saved to: ", filtered_file)
+
+return(obj)
+}
+
+# 9 USER INPUT
+input_file <- "results/01_differential_expression/condition_mockVZV_VZV_manual_padj.rds"
+output_dir <- "results/03_volcano_plot/"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+plot_file <- file.path(output_dir, "volcano_ECM_noVZV")
+
+# 10. Read DESeq2 data from .rds
+data <- readRDS(input_file)
+
+# If the object is DESeqResults, convert to dataframe
+if(!is.data.frame(data)) {
+  data <- as.data.frame(data)
+  data$gene_id <- rownames(data)
+}
+
+# Ensure it's a data.frame
+if(!is.data.frame(data)) {
+  data <- as.data.frame(data)
+}
+
+# Ensure gene_id exists
+if(!"gene_id" %in% colnames(data)) {
+  # If rownames are present, use them
+  if(length(rownames(data)) == nrow(data)) {
+    data$gene_id <- rownames(data)
+  } else {
+    stop("No 'gene_id' column found and rownames are missing in the .rds object")
+  }
+}
+
+# 11. Run analysis
+results <- getInfo(
+  obj = data,
+  pcut = 0.05,
+  FC = 1,
+  map = output_dir,
+  save_plot = TRUE,
+  plot_file = plot_file
+)
+
+```
+

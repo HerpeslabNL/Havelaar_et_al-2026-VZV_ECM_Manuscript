@@ -1,0 +1,187 @@
+---
+title: "4.GO_Slim"
+output: html_document
+date: "2026-10-16"
+---
+
+```{r}
+
+# GO Slim ORA Dotplots + CSV export (BP / CC / MF)
+
+
+# Libraries
+
+suppressPackageStartupMessages({
+  library(clusterProfiler)
+  library(org.Hs.eg.db)
+  library(AnnotationDbi)
+  library(DOSE)
+  library(dplyr)
+  library(readr)
+  library(ggplot2)
+})
+
+
+# Paths (explicit)
+
+input_dir  <- "results/03_volcano_plot"
+output_dir <- "results/04_GO_slim_ORA"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+input_file <- file.path(input_dir,"deseq2_results_filtered.csv")
+
+# Load data
+df <- read_csv(input_file, show_col_types = FALSE)
+
+# Use ALL genes (already filtered for significance)
+genes_ensg <- unique(df$gene_id)
+
+# Map Ensembl -> Entrez
+gene_map <- bitr(
+  genes_ensg,
+  fromType = "ENSEMBL",
+  toType   = "ENTREZID",
+  OrgDb    = org.Hs.eg.db
+)
+
+entrez_genes <- unique(gene_map$ENTREZID)
+
+# Download & parse GO Slim generic term set
+slim_url <- "http://current.geneontology.org/ontology/subsets/goslim_generic.obo"
+slim_obo <- readLines(slim_url)
+
+term_starts <- which(slim_obo == "[Term]")
+
+slim_info <- lapply(term_starts, function(i) {
+  block     <- slim_obo[i:min(i + 25, length(slim_obo))]
+  id_line   <- grep("^id: GO:", block, value = TRUE)[1]
+  name_line <- grep("^name: ",  block, value = TRUE)[1]
+  ns_line   <- grep("^namespace: ", block, value = TRUE)[1]
+  if (!is.na(id_line)) {
+    data.frame(
+      GOID      = sub("^id: ", "", id_line),
+      name      = sub("^name: ", "", name_line),
+      namespace = sub("^namespace: ", "", ns_line),
+      stringsAsFactors = FALSE
+    )
+  }
+}) %>% bind_rows()
+
+message("GO Slim terms loaded: ", nrow(slim_info),
+        " (BP=", sum(slim_info$namespace == "biological_process"),
+        ", CC=", sum(slim_info$namespace == "cellular_component"),
+        ", MF=", sum(slim_info$namespace == "molecular_function"), ")")
+
+# Split slim terms by ontology
+slim_by_ont <- list(
+  BP = slim_info %>% filter(namespace == "biological_process"),
+  CC = slim_info %>% filter(namespace == "cellular_component"),
+  MF = slim_info %>% filter(namespace == "molecular_function")
+)
+
+# Build gene-to-GO mappings (all propagated annotations)
+go_data <- AnnotationDbi::toTable(org.Hs.egGO2ALLEGS)
+# Columns: gene_id, go_id, Evidence, Ontology
+
+# GO Slim ORA function (using enricher with custom term sets)
+run_go_slim <- function(ont_code) {
+
+  slim_ids <- slim_by_ont[[ont_code]]
+
+  ont_map <- c(BP = "BP", CC = "CC", MF = "MF")
+
+  term2gene <- go_data %>%
+    filter(go_id %in% slim_ids$GOID, Ontology == ont_map[[ont_code]]) %>%
+    dplyr::select(go_id, gene_id) %>%
+    distinct()
+
+  term2name <- slim_ids %>%
+    dplyr::select(GOID, name) %>%
+    distinct()
+
+  res <- enricher(
+    gene         = entrez_genes,
+    TERM2GENE    = term2gene,
+    TERM2NAME    = term2name,
+    pvalueCutoff = 1,
+    qvalueCutoff = 1
+  )
+
+  if (!is.null(res)) {
+    res <- setReadable(res, OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+  }
+  res
+}
+
+# Run GO Slim enrichment
+ego_BP <- run_go_slim("BP")
+ego_CC <- run_go_slim("CC")
+ego_MF <- run_go_slim("MF")
+
+# Function to save enrichment results as CSV
+save_go_csv <- function(ego, ontology_label) {
+  ego_df <- as.data.frame(ego)
+  if (nrow(ego_df) == 0) return(NULL)
+
+  write.csv(
+    ego_df,
+    file = file.path(output_dir, paste0("GOSlim_", ontology_label, "_results.csv")),
+    row.names = FALSE
+  )
+}
+
+# Save CSVs
+save_go_csv(ego_BP, "Biological_Process")
+save_go_csv(ego_CC, "Cellular_Component")
+save_go_csv(ego_MF, "Molecular_Function")
+
+# Function to create dotplots
+make_go_dotplot <- function(ego, ontology_label) {
+
+  ego_df <- as.data.frame(ego)
+  if (nrow(ego_df) == 0) return(NULL)
+
+  p <- dotplot(
+    ego,
+    showCategory = 20,
+    font.size = 12
+  ) +
+    ggtitle(paste("GO Slim", ontology_label, "Enrichment")) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      axis.text.y = element_text(size = 10),
+      axis.text.x = element_text(size = 10)
+    )
+
+  # Save PDF
+  ggsave(
+    filename = file.path(
+      output_dir,
+      paste0("GOSlim_", ontology_label, "_dotplot.pdf")
+    ),
+    plot = p,
+    width = 6.5,
+    height = 8
+  )
+
+  # Save PNG (NEW)
+  ggsave(
+    filename = file.path(
+      output_dir,
+      paste0("GOSlim_", ontology_label, "_dotplot.png")
+    ),
+    plot = p,
+    width = 6.5,
+    height = 8,
+    dpi = 300
+  )
+}
+
+# Generate dotplots
+make_go_dotplot(ego_BP, "Biological_Process")
+make_go_dotplot(ego_CC, "Cellular_Component")
+make_go_dotplot(ego_MF, "Molecular_Function")
+
+message("GO Slim enrichment analysis complete. Dotplots + CSVs saved to: ", output_dir)
+
+```

@@ -1,0 +1,549 @@
+---
+title: "7.VZV_Gene_Map"
+output: html_document
+date: "2026-10-16"
+---
+
+```{r}
+### ====================================================================
+### Genome-wide stranded VZV CUT&RUN coverage visualization
+### ====================================================================
+### Produces a publication-sized panel (16 x 6.4 cm) and optional zoom panels.
+###
+### Layout (top to bottom):
+###   Forward coverage : mean profile and replicate variability band
+###   Forward mRNAs    : annotation boxes
+###   Genome position  : coordinate axis
+###   Reverse mRNAs    : annotation boxes
+###   Reverse coverage : signal drawn below the genome axis
+###
+### Requirements: Gviz, rtracklayer, GenomicRanges, GenomeInfoDb, IRanges.
+### Input: six stranded bigWig files (three replicates per strand) and two
+###        strand-specific GFF3 annotation files; see CONFIG below.
+### Set the VZV_COVERAGE_DATA_DIR environment variable to the directory
+### containing these input files, or launch R from that directory.
+### The bigWig files use a combined-reference contig named 'dumas.fasta';
+### the script retains this contig and relabels it 'VZV' for plotting.
+### Pass relative bigWig filenames to rtracklayer for portability across
+### platforms and to avoid path interpretation problems on some systems.
+###
+### IMPORTANT: Verify that swap_coverage_strands matches the library
+### preparation and bigWig export conventions for the supplied dataset.
+###
+### Outputs: main PDF/PNG (optional TIFF) and optional zoom PDF/PNG.
+### --------------------------------------------------------------------
+
+suppressPackageStartupMessages({
+  library(Gviz)
+  library(rtracklayer)
+  library(GenomicRanges)
+  library(GenomeInfoDb)
+  library(IRanges)
+})
+
+options(ucscChromosomeNames = FALSE)
+
+### --------------------------------------------------------------------
+### 0. CONFIG
+### --------------------------------------------------------------------
+# Run from the input folder, or set VZV_COVERAGE_DATA_DIR to its location.
+# Example (shell): VZV_COVERAGE_DATA_DIR=/path/to/data Rscript this_script.R
+# BigWig inputs are read using relative filenames (see note above).
+data_dir <- Sys.getenv("VZV_COVERAGE_DATA_DIR", unset = ".")
+if (!dir.exists(data_dir)) stop("Input directory not found: ", data_dir)
+setwd(data_dir)
+
+myChr      <- "VZV"
+vzv_contig <- "dumas.fasta"           # exact VZV contig name inside the bigWigs
+genome_length <- NA_integer_          # NA = size from data; else Dumas = 124884
+
+fwd_files <- c("VZV1.forward.bigWig", "VZV2.forward.bigWig", "VZV3.forward.bigWig")
+rev_files <- c("VZV1.reverse.bigWig", "VZV2.reverse.bigWig", "VZV3.reverse.bigWig")
+
+gff_fwd <- "VZV-Dumas-Forward-2.0.gff3"
+gff_rev <- "VZV-Dumas-Reverse-2.0.gff3"
+gff_fwd_url <- NULL                   # set to a GitHub URL if the local file is HTML
+gff_rev_url <- NULL
+
+## Strand assignment depends on library preparation and track export.
+## For the dataset originally used, forward/reverse bigWig labels were opposite
+## to the annotation strands. Retain TRUE only after verifying strand
+## orientation for your own input files; use FALSE if already sense-stranded.
+swap_coverage_strands <- TRUE
+
+## --- final panel geometry -----------------------------------------
+panel_w_cm <- 16
+panel_h_cm <- 6.4                    # keep < 6.5
+raster_dpi <- 600                    # PNG/TIFF resolution at final size
+make_tiff  <- FALSE
+out_base   <- "VZV_coverage_panel"
+
+## --- typography: journal standard, measured AT FINAL SIZE -----------
+## Most journals require figure lettering ~5-8 pt at print size (Nature 5-7,
+## Cell 6-8, PLoS >=6, eLife ~7). Effective size = base_pt * cex, so the cex
+## values are kept near 1 and nothing falls below ~6 pt.
+base_pt   <- 7      # device pointsize + Gviz `fontsize`
+cex_lab   <- 1.00   # track titles + coverage y-axis numbers  -> ~7 pt
+cex_coord <- 0.85   # genome coordinate ruler (denser text)   -> ~6 pt
+
+## --- y-axis scaling ---------------------------------------------------
+## "log2" = log2(coverage + 1)   (label axis "log2 coverage")   [default]
+## "clip" = linear, capped at `clip_quantile` of non-zero signal
+## "none" = linear to the true maximum
+y_scaling     <- "log2"
+clip_quantile <- 0.90
+y_max_fwd     <- NA_real_            # optional hard ceiling (chosen scale's units)
+y_max_rev     <- NA_real_
+
+## Reverse strand sits below the axis. "flip" = axis runs downward but the tick
+## labels stay POSITIVE (recommended). If your Gviz build renders it pointing
+## up, switch to "signed" (negative-valued ticks, the classic mirror).
+reverse_axis  <- "flip"
+
+## --- coverage rendering --------------------------------------------
+coverage_style <- "meanband"         # "meanband" = mean line + replicate CI band
+# "lines"    = one thin line per replicate
+bin_bp         <- 25L                # bp bin width for the profile
+fwd_line <- "#b2182b"; fwd_band <- "#f4a582"
+rev_line <- "#2166ac"; rev_band <- "#92c5de"
+fwd_reps <- c("#fddbc7", "#ef8a62", "#b2182b")   # used only by "lines"
+rev_reps <- c("#d1e5f0", "#67a9cf", "#2166ac")
+
+## --- middle annotation strip ------------------------------------------
+gene_stacking <- "dense"             # "dense" = 1 equal-height row per strand
+# "squish" = individual mRNAs, rows equalised
+gene_shape    <- "box"              # "box" (equal-height) or "arrow" (shows 5'->3')
+fwd_gene_fill <- "#7f2b34"
+rev_gene_fill <- "#274b73"
+
+## --- zoom confirmation figure (~10 kb windows) ----------------------
+make_zoom        <- TRUE
+zoom_width_bp    <- 10000L
+## NULL = auto-pick the 2 strongest forward + 2 strongest reverse loci.
+## Or give windows explicitly, e.g. list(c(30000,40000), c(60000,70000), ...).
+zoom_regions     <- NULL
+zoom_ncol        <- 1               # 1 = four full-width panels stacked (roomy)
+zoom_panel_h_cm  <- 5.5             # height PER panel; page = zoom_ncol layout
+zoom_gene_stacking <- "squish"      # per-mRNA rows; auto-falls back to "dense"
+zoom_max_rows    <- 7               # if a window needs more rows -> dense, no labels
+
+### --------------------------------------------------------------------
+### 1. VZV CONTIG LENGTH (for the bigWig selection window)
+### --------------------------------------------------------------------
+getContigLen <- function(file, contig) {
+  si <- tryCatch(seqinfo(BigWigFile(file)), error = function(e) NULL)
+  if (is.null(si) || !contig %in% seqnames(si)) return(NA_integer_)
+  as.integer(seqlengths(si)[contig])
+}
+sel_end <- if (!is.na(genome_length)) as.integer(genome_length) else {
+  L <- getContigLen(fwd_files[1], vzv_contig); if (is.na(L)) 200000L else L
+}
+
+### --------------------------------------------------------------------
+### 2. SAFE BIGWIG LOADER -> in-memory GRanges, VZV contig only
+### --------------------------------------------------------------------
+loadBW <- function(file, contig, target_chr, upto) {
+  if (!file.exists(file)) stop("bigWig not found in ", getwd(), " : ", file)
+  sel <- GRanges(contig, IRanges(1, upto))
+  gr <- tryCatch(
+    suppressWarnings(rtracklayer::import.bw(file, which = sel)),
+    error = function(e)
+      stop("Failed to read '", file, "' (", conditionMessage(e), ").\n",
+           "  'Unrecognized protocol C' => an absolute path reached the UCSC ",
+           "library; keep setwd(data_dir) and use bare filenames."))
+  if (length(gr) == 0L)
+    stop(file, ": no coverage on contig '", contig,
+         "'. Fix `vzv_contig` to the exact VZV contig name in the bigWig.")
+  gr <- keepSeqlevels(gr, contig, pruning.mode = "coarse")
+  seqlevels(gr) <- target_chr
+  genome(gr)    <- unname(target_chr)
+  sort(gr)
+}
+
+if (isTRUE(swap_coverage_strands)) {
+  message("swap_coverage_strands = TRUE : exchanging forward/reverse bigWig sets")
+  tmp <- fwd_files; fwd_files <- rev_files; rev_files <- tmp
+}
+
+bw_fwd <- lapply(fwd_files, loadBW, contig = vzv_contig, target_chr = myChr, upto = sel_end)
+bw_rev <- lapply(rev_files, loadBW, contig = vzv_contig, target_chr = myChr, upto = sel_end)
+
+### --------------------------------------------------------------------
+### 3. GENOME EXTENT, TRANSFORM, BIN THE REPLICATES ONTO SHARED WINDOWS
+### --------------------------------------------------------------------
+my_start <- 1L
+my_end   <- if (!is.na(genome_length)) as.integer(genome_length) else
+  as.integer(max(vapply(c(bw_fwd, bw_rev), function(g) max(end(g)), numeric(1))))
+
+real_max_fwd <- max(vapply(bw_fwd, function(g) max(score(g)), numeric(1)))
+real_max_rev <- max(vapply(bw_rev, function(g) max(score(g)), numeric(1)))
+
+tf <- switch(y_scaling,
+             log2 = function(x) log2(x + 1),
+             clip = function(x) x,
+             none = function(x) x,
+             stop("y_scaling must be 'log2', 'clip' or 'none'"))
+bw_fwd <- lapply(bw_fwd, function(g) { score(g) <- tf(score(g)); g })
+bw_rev <- lapply(bw_rev, function(g) { score(g) <- tf(score(g)); g })
+
+## shared, cut-to-length tiles
+si_vzv <- Seqinfo(myChr, my_end, NA, myChr)
+bins   <- tileGenome(si_vzv, tilewidth = bin_bp, cut.last.tile.in.chrom = TRUE)
+
+bin_profiles <- function(grl) {
+  w <- stats::setNames(as.integer(my_end), myChr)
+  vapply(grl, function(g) {
+    cvg <- coverage(g, weight = "score", width = w)          # length == my_end
+    binnedAverage(bins, cvg, "v")$v
+  }, numeric(length(bins)))
+}
+M_fwd <- bin_profiles(bw_fwd)          # nbins x 3, >= 0, transformed
+M_rev <- bin_profiles(bw_rev)
+
+nice_ceiling <- function(x) {          # round up to 1/2/5 x 10^k
+  if (!is.finite(x) || x <= 0) return(1)
+  mag <- 10^floor(log10(x)); f <- x / mag
+  mag * if (f <= 1) 1 else if (f <= 2) 2 else if (f <= 5) 5 else 10
+}
+ceil_for <- function(M, hard) {
+  if (!is.na(hard)) return(hard)
+  v <- M[is.finite(M) & M > 0]
+  if (!length(v)) return(1)
+  if (y_scaling == "clip") nice_ceiling(stats::quantile(v, clip_quantile, names = FALSE))
+  else ceiling(max(v))
+}
+lim_fwd <- ceil_for(M_fwd, y_max_fwd)
+lim_rev <- ceil_for(M_rev, y_max_rev)
+
+## Reverse strand orientation (see `reverse_axis` in CONFIG).
+##  "flip"   : values stay positive, axis drawn high->low  -> positive ticks
+##  "signed" : values negated, axis -lim..0                -> negative ticks
+if (identical(reverse_axis, "signed")) {
+  M_rev    <- -M_rev
+  rev_ylim <- c(-lim_rev, 0)
+} else {
+  rev_ylim <- c(lim_rev, 0)
+}
+fwd_ylim <- c(0, lim_fwd)
+
+message(sprintf("VZV 1..%d bp | y_scaling=%s | bins=%d bp | axis 0..%g (fwd, up)  0..%g (rev, down)",
+                my_end, y_scaling, bin_bp, lim_fwd, lim_rev))
+message(sprintf("true raw max: fwd %.1f  rev %.1f", real_max_fwd, real_max_rev))
+if (y_scaling == "log2")
+  message("Label the y-axes 'log2 coverage' in the figure legend.")
+
+### --------------------------------------------------------------------
+### 4. mRNA MODELS -> plain GRanges of mRNA features (boxes only)
+### --------------------------------------------------------------------
+assertGff <- function(path) {
+  head_txt <- tolower(paste(readLines(path, n = 60, warn = FALSE), collapse = "\n"))
+  if (grepl("<!doctype html|<html|blob-code|js-file-line|<td |<span ", head_txt))
+    stop(path, " looks like a saved HTML page, not GFF3. Download the RAW file.")
+  invisible(TRUE)
+}
+fetchRawGff <- function(local, url) {
+  if (is.null(url) || !nzchar(url)) return(local)
+  raw <- sub("^https?://github\\.com/(.+?)/blob/",
+             "https://raw.githubusercontent.com/\\1/", url)
+  message("Downloading ", raw, "  ->  ", local)
+  utils::download.file(raw, local, mode = "wb", quiet = TRUE); local
+}
+loadMrna <- function(gff_path, target_chr) {
+  if (!file.exists(gff_path)) stop("GFF not found in ", getwd(), " : ", gff_path)
+  assertGff(gff_path)
+  lines <- readLines(gff_path, warn = FALSE)
+  keep  <- grepl("^#", lines) |
+    lengths(regmatches(lines, gregexpr("\t", lines, fixed = TRUE))) >= 8L
+  tmp <- tempfile(fileext = ".gff3"); on.exit(unlink(tmp), add = TRUE)
+  writeLines(lines[keep], tmp)
+  
+  gr  <- rtracklayer::import(tmp, format = "gff3")
+  sub <- gr[tolower(as.character(gr$type)) %in% c("mrna", "transcript")]
+  if (!length(sub)) sub <- gr[tolower(as.character(gr$type)) %in% c("gene", "exon")]
+  if (!length(sub)) sub <- gr
+  lev <- as.character(unique(seqnames(sub)))
+  if (length(lev) != 1L)
+    stop(gff_path, ": expected one contig, got ", paste(lev, collapse = ", "))
+  sub <- keepSeqlevels(sub, lev, pruning.mode = "coarse")
+  seqlevels(sub) <- target_chr
+  genome(sub)    <- target_chr
+  sort(sub)
+}
+
+mrna_fwd <- loadMrna(fetchRawGff(gff_fwd, gff_fwd_url), myChr)
+mrna_rev <- loadMrna(fetchRawGff(gff_rev, gff_rev_url), myChr)
+
+### --------------------------------------------------------------------
+### 5. BUILD TRACKS
+### --------------------------------------------------------------------
+## ---- coverage: one track per strand --------------------------------
+buildCoverage <- function(M, ylim, line_col, band_col, rep_cols, name) {
+  rng   <- range(ylim)                          # ylim may be c(top,0) when flipped
+  ticks <- pretty(rng, n = 3)
+  ticks <- ticks[ticks >= rng[1] - 1e-9 & ticks <= rng[2] + 1e-9]
+  if (coverage_style == "lines") {
+    lay <- lapply(seq_len(ncol(M)), function(i) {
+      gr <- bins; gr$score <- M[, i]
+      DataTrack(gr, type = "l", name = name, chromosome = myChr, genome = myChr,
+                col = rep_cols[i], lwd = 0.6, alpha = 0.9,
+                ylim = ylim, yTicksAt = ticks,
+                col.axis = "black", col.title = "black",
+                background.title = "transparent",
+                cex.axis = cex_lab, cex.title = cex_lab)
+    })
+    return(OverlayTrack(lay, name = name, background.title = "transparent"))
+  }
+  gr <- bins
+  MM <- M; colnames(MM) <- paste0("rep", seq_len(ncol(MM)))
+  mcols(gr) <- as(as.data.frame(MM), "DataFrame")
+  DataTrack(gr, name = name, chromosome = myChr, genome = myChr,
+            groups      = factor(rep(name, ncol(MM))),
+            type        = c("a", "confint"),
+            aggregation = "mean", window = -1,
+            col = line_col, lwd = 1,
+            fill.confint = band_col, col.confint = band_col, alpha.confint = 0.40,
+            baseline = 0, col.baseline = "grey55", lwd.baseline = 0.4,
+            ylim = ylim, yTicksAt = ticks,
+            col.axis = "black", col.title = "black",
+            background.title = "transparent",
+            cex.axis = cex_lab, cex.title = cex_lab)
+}
+cov_fwd <- buildCoverage(M_fwd, fwd_ylim, fwd_line, fwd_band, fwd_reps, "Forward")
+cov_rev <- buildCoverage(M_rev, rev_ylim, rev_line, rev_band, rev_reps, "Reverse")
+
+## ---- mRNA strips: equal-height boxes, no labels -------------------
+shp <- if (gene_shape == "arrow") "fixedArrow" else "box"
+mrnaTrack <- function(gr, fill, name) {
+  AnnotationTrack(gr, chromosome = myChr, genome = myChr, name = name,
+                  stacking = gene_stacking, shape = shp,
+                  col = "grey20", lwd = 0.25, fill = fill,
+                  showId = FALSE, showFeatureId = FALSE,
+                  arrowHeadMaxWidth = 6, min.width = 1,
+                  background.title = "transparent",
+                  col.title = "black", cex.title = cex_lab, rotation.title = 0)
+}
+tr_fwd_gene <- mrnaTrack(mrna_fwd, fwd_gene_fill, "")
+tr_rev_gene <- mrnaTrack(mrna_rev, rev_gene_fill, "")
+
+## ---- compact genome axis -----------------------------------------
+gtrack <- GenomeAxisTrack(col = "black", fontcolor = "black",
+                          cex = cex_coord, lwd = 0.6, distFromAxis = 0.5,
+                          labelPos = "below", add53 = FALSE, add35 = FALSE,
+                          littleTicks = FALSE)
+
+### --------------------------------------------------------------------
+### 6. TRACK HEIGHTS  (equal box height on both strands guaranteed)
+### --------------------------------------------------------------------
+if (gene_stacking == "squish") {
+  nrf <- max(1L, max(disjointBins(sort(ranges(mrna_fwd)))))
+  nrr <- max(1L, max(disjointBins(sort(ranges(mrna_rev)))))
+} else nrf <- nrr <- 1L
+
+row_h  <- 0.10          # height of ONE annotation row (relative units)
+axis_h <- 0.13
+cov_h  <- 1.00
+sizes  <- c(cov_h, row_h * nrf, axis_h, row_h * nrr, cov_h)
+sizes  <- sizes / sum(sizes)
+
+plotArgs <- list(
+  list(cov_fwd, tr_fwd_gene, gtrack, tr_rev_gene, cov_rev),
+  from = my_start, to = my_end, chromosome = myChr,
+  sizes = sizes,
+  cex.title = cex_lab, cex.axis = cex_lab, cex = cex_lab, fontsize = base_pt,
+  title.width = 0.9, margin = 5, innerMargin = 3,
+  col.axis = "black", background.title = "transparent",
+  grid = FALSE, legend = FALSE
+)
+
+## Older Gviz builds lack type="confint"; fall back to overlaid lines if so.
+if (coverage_style == "meanband") {
+  probe <- tempfile(fileext = ".pdf")
+  ok <- tryCatch({ pdf(probe); do.call(plotTracks, plotArgs); dev.off(); TRUE },
+                 error = function(e) { try(dev.off(), silent = TRUE); FALSE })
+  unlink(probe)
+  if (!isTRUE(ok)) {
+    message("type='confint' unavailable here -> using overlaid replicate lines.")
+    coverage_style <- "lines"
+    cov_fwd <- buildCoverage(M_fwd, fwd_ylim, fwd_line, fwd_band, fwd_reps, "Forward")
+    cov_rev <- buildCoverage(M_rev, rev_ylim, rev_line, rev_band, rev_reps, "Reverse")
+    plotArgs[[1]] <- list(cov_fwd, tr_fwd_gene, gtrack, tr_rev_gene, cov_rev)
+  }
+}
+
+### --------------------------------------------------------------------
+### 7. RENDER AT FINAL PANEL SIZE
+### --------------------------------------------------------------------
+w_in <- panel_w_cm / 2.54
+h_in <- panel_h_cm / 2.54
+draw <- function() do.call(plotTracks, plotArgs)
+
+if (interactive()) try(draw(), silent = TRUE)   # on-screen preview
+
+out_pdf <- paste0(out_base, ".pdf")
+out_png <- paste0(out_base, ".png")
+
+pdf(out_pdf, width = w_in, height = h_in, pointsize = base_pt); draw(); dev.off()
+png(out_png, width = w_in, height = h_in, units = "in",
+    res = raster_dpi, pointsize = base_pt); draw(); dev.off()
+if (make_tiff) {
+  tiff(paste0(out_base, ".tiff"), width = w_in, height = h_in, units = "in",
+       res = raster_dpi, pointsize = base_pt, compression = "lzw"); draw(); dev.off()
+}
+
+message("Wrote ", file.path(getwd(), out_pdf), "  and  ", file.path(getwd(), out_png),
+        sprintf("  (%.1f x %.1f cm @ %d dpi)", panel_w_cm, panel_h_cm, raster_dpi))
+
+
+### --------------------------------------------------------------------
+### 8. ZOOM CONFIRMATION FIGURE  (four ~10 kb windows, full-width panels)
+###    Shows that forward peaks now sit over forward-strand mRNAs and
+###    reverse peaks over reverse-strand mRNAs, after swap_coverage_strands.
+###    Dense windows auto-fall back to unlabelled dense stacking.
+### --------------------------------------------------------------------
+if (isTRUE(make_zoom)) {
+  
+  cen        <- start(bins) + bin_bp / 2
+  mean_fwd_b <- rowMeans(M_fwd)
+  mean_rev_b <- rowMeans(abs(M_rev))
+  
+  pick_peaks <- function(v, n, min_gap) {
+    chosen <- integer(0)
+    for (i in order(v, decreasing = TRUE)) {
+      if (!length(chosen) || all(abs(cen[i] - cen[chosen]) >= min_gap))
+        chosen <- c(chosen, i)
+      if (length(chosen) == n) break
+    }
+    sort(cen[chosen])
+  }
+  
+  if (is.null(zoom_regions)) {
+    ctr <- c(pick_peaks(mean_fwd_b, 2, zoom_width_bp * 1.5),
+             pick_peaks(mean_rev_b, 2, zoom_width_bp * 1.5))
+    zoom_regions <- lapply(ctr, function(c0) {
+      f <- max(1L, round(c0 - zoom_width_bp / 2))
+      c(f, min(my_end, f + zoom_width_bp))
+    })
+  }
+  zoom_regions <- head(zoom_regions, 4)
+  
+  ## nearest-mRNA label for each window
+  grab_name <- function(g) {
+    mc <- mcols(g)
+    for (k in c("Name", "gene_name", "gene", "ID", "gene_id", "locus_tag"))
+      if (!is.null(mc[[k]])) return(as.character(mc[[k]]))
+    rep(NA_character_, length(g))
+  }
+  mrna_all    <- suppressWarnings(c(granges(mrna_fwd), granges(mrna_rev)))
+  mrna_all_nm <- c(grab_name(mrna_fwd), grab_name(mrna_rev))
+  
+  shp2 <- if (gene_shape == "arrow") "fixedArrow" else "box"
+  
+  ## rows a squished AnnotationTrack would need inside one window
+  rows_needed <- function(gr, fr, to) {
+    sub <- subsetByOverlaps(gr, GRanges(myChr, IRanges(fr, to)))
+    if (!length(sub)) 1L else max(disjointBins(sort(ranges(sub))))
+  }
+  ## gene track for one window; labelled squish unless the window is too dense
+  mrnaZoom <- function(gr, fill, fr, to) {
+    dense <- zoom_gene_stacking != "squish" ||
+      rows_needed(gr, fr, to) > zoom_max_rows
+    AnnotationTrack(gr, chromosome = myChr, genome = myChr, name = "",
+                    stacking = if (dense) "dense" else "squish", shape = shp2,
+                    col = "grey20", lwd = 0.25, fill = fill,
+                    id = grab_name(gr), featureAnnotation = "id",
+                    showFeatureId = !dense, fontcolor.feature = "black",
+                    cex.feature = 0.5, background.title = "transparent")
+  }
+  
+  mrnaZoom2dense <- function(gr, fill)
+    AnnotationTrack(gr, chromosome = myChr, genome = myChr, name = "",
+                    stacking = "dense", shape = shp2, col = "grey20",
+                    lwd = 0.25, fill = fill, showFeatureId = FALSE,
+                    background.title = "transparent")
+  
+  ## genes get the largest vertical slice; coverage just needs to show the peak
+  sizes_zoom <- { s <- c(0.75, 1.05, 0.16, 1.05, 0.75); s / sum(s) }
+  
+  n_z  <- length(zoom_regions)
+  ncol <- max(1L, min(as.integer(zoom_ncol), n_z))
+  nrow <- ceiling(n_z / ncol)
+  
+  draw_zoom_grid <- function() {
+    grid::grid.newpage()
+    grid::pushViewport(grid::viewport(layout = grid::grid.layout(nrow, ncol)))
+    for (k in seq_len(n_z)) {
+      fr <- zoom_regions[[k]][1]; to <- zoom_regions[[k]][2]
+      idx <- which(cen >= fr & cen <= to)
+      lf  <- max(1, nice_ceiling(max(mean_fwd_b[idx], na.rm = TRUE)))
+      lr  <- max(1, nice_ceiling(max(mean_rev_b[idx], na.rm = TRUE)))
+      cf  <- buildCoverage(M_fwd, c(0, lf), fwd_line, fwd_band, fwd_reps, "Fwd")
+      cr  <- buildCoverage(M_rev, if (identical(reverse_axis, "signed"))
+        c(-lr, 0) else c(lr, 0),
+        rev_line, rev_band, rev_reps, "Rev")
+      gzf <- mrnaZoom(mrna_fwd, fwd_gene_fill, fr, to)
+      gzr <- mrnaZoom(mrna_rev, rev_gene_fill, fr, to)
+      
+      pt  <- GRanges(myChr, IRanges(round(mean(c(fr, to))), width = 1))
+      h   <- suppressWarnings(GenomicRanges::nearest(pt, mrna_all))
+      lab <- if (length(h) && !is.na(h) && !is.na(mrna_all_nm[h]))
+        paste0(mrna_all_nm[h], "  ") else ""
+      ttl <- sprintf("%s%.1f-%.1f kb", lab, fr / 1000, to / 1000)
+      
+      grid::pushViewport(grid::viewport(
+        layout.pos.row = ((k - 1) %/% ncol) + 1,
+        layout.pos.col = ((k - 1) %%  ncol) + 1))
+      grid::pushViewport(grid::viewport(layout = grid::grid.layout(
+        2, 1, heights = grid::unit.c(grid::unit(1.3, "lines"),
+                                     grid::unit(1, "null")))))
+      grid::pushViewport(grid::viewport(layout.pos.row = 1))
+      grid::grid.text(ttl, gp = grid::gpar(fontsize = base_pt, fontface = "bold"))
+      grid::popViewport(1)
+      grid::pushViewport(grid::viewport(layout.pos.row = 2))
+      tryCatch(
+        plotTracks(list(cf, gzf, gtrack, gzr, cr),
+                   from = fr, to = to, chromosome = myChr, sizes = sizes_zoom,
+                   cex.title = cex_lab, cex.axis = cex_lab, cex = cex_lab,
+                   fontsize = base_pt, title.width = 1.1, margin = 6,
+                   innerMargin = 3, col.axis = "black",
+                   background.title = "transparent", grid = FALSE,
+                   legend = FALSE, add = TRUE),
+        error = function(e) {
+          message("  window ", k, " still too dense (", conditionMessage(e),
+                  ") -> dense, unlabelled")
+          plotTracks(list(cf,
+                          mrnaZoom2dense(mrna_fwd, fwd_gene_fill),
+                          gtrack,
+                          mrnaZoom2dense(mrna_rev, rev_gene_fill), cr),
+                     from = fr, to = to, chromosome = myChr, sizes = sizes_zoom,
+                     cex.title = cex_lab, cex.axis = cex_lab, cex = cex_lab,
+                     fontsize = base_pt, title.width = 1.1, margin = 6,
+                     innerMargin = 3, col.axis = "black",
+                     background.title = "transparent", grid = FALSE,
+                     legend = FALSE, add = TRUE)
+        })
+      grid::popViewport(3)
+    }
+    grid::popViewport(1)
+  }
+  mrnaZoom2dense <- function(gr, fill)
+    AnnotationTrack(gr, chromosome = myChr, genome = myChr, name = "",
+                    stacking = "dense", shape = shp2, col = "grey20",
+                    lwd = 0.25, fill = fill, showFeatureId = FALSE,
+                    background.title = "transparent")
+  
+  zw <- panel_w_cm / 2.54
+  zh <- (zoom_panel_h_cm * nrow) / 2.54
+  pdf(paste0(out_base, "_zoom.pdf"), width = zw, height = zh, pointsize = base_pt)
+  try(draw_zoom_grid()); dev.off()
+  png(paste0(out_base, "_zoom.png"), width = zw, height = zh, units = "in",
+      res = raster_dpi, pointsize = base_pt)
+  try(draw_zoom_grid()); dev.off()
+  
+  message("Wrote ", file.path(getwd(), paste0(out_base, "_zoom.pdf")),
+          "  and  ", paste0(out_base, "_zoom.png"),
+          "  (windows: ",
+          paste(vapply(zoom_regions, function(r)
+            sprintf("%.0f-%.0f", r[1], r[2]), ""), collapse = ", "), ")")
+}
+
+```

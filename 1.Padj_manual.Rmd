@@ -1,0 +1,107 @@
+---
+title: "1.Padj_manual"
+output: html_document
+date: "2026-10-16"
+---
+
+```{r}
+# =============================================================================
+# Update paths and sample names in the USER SETTINGS section as needed.
+# =============================================================================
+
+library(tidyverse)
+library(writexl)
+library(readxl)
+library(DESeq2)
+library(genefilter)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+
+# Base paths
+path <- "data/"
+raw_data <- "Raw_Data/"
+results <- "Results/"
+
+path_raw_data <- file.path(path, raw_data)
+path_results  <- file.path(path, results)
+
+if (!dir.exists(path_results)) dir.create(path_results, recursive = TRUE)
+
+# 1. Automatically detect the DESeq2 RDS file
+
+dds_file <- list.files(
+  path_raw_data,
+  pattern = "dds\\.rld\\.rds$",
+  full.names = TRUE
+)
+
+if (length(dds_file) != 1) {
+  stop("Expected exactly one .dds.rld.rds file in Raw_Data/. Found: ", length(dds_file))
+}
+
+message("Using DESeq2 object: ", basename(dds_file))
+
+dds <- readRDS(dds_file)
+
+
+# 2. Automatically detect the contrast CSV file
+
+contrast_file <- list.files(
+  path_raw_data,
+  pattern = "\\.csv$",
+  full.names = TRUE
+)
+
+if (length(contrast_file) != 1) {
+  stop("Expected exactly one contrast CSV file in Raw_Data/. Found: ", length(contrast_file))
+}
+
+message("Using contrast file: ", basename(contrast_file))
+
+contrasts <- read.csv(contrast_file, stringsAsFactors = FALSE)
+
+# Remove blocking column if present
+if ("blocking" %in% colnames(contrasts)) {
+  contrasts$blocking <- NULL
+}
+
+# Loop over contrasts
+for (i in seq_len(nrow(contrasts))) {
+  
+  contrast_name <- contrasts$id[i]          # name for output files
+  variable      <- contrasts$variable[i]    # e.g. "condition"
+  reference     <- contrasts$reference[i]   # baseline
+  target        <- contrasts$target[i]      # comparison
+  
+  message("Processing: ", contrast_name,
+          "  (", variable, ": ", target, " vs ", reference, ")")
+  
+  # DESeq2 contrast vector: log2FC = target / reference
+  contrast_vec <- c(variable, target, reference)
+  
+  # Extract results
+  res <- results(dds, contrast = contrast_vec)
+  res_df <- as.data.frame(res)
+  
+  res_df$gene_symbol <- mapIds(
+  org.Hs.eg.db,
+  keys = rownames(res_df),
+  column = "SYMBOL",
+  keytype = "ENSEMBL",
+  multiVals = "first"
+)
+
+res_df$gene_symbol[is.na(res_df$gene_symbol)] <- rownames(res_df)[is.na(res_df$gene_symbol)]
+  
+  # Manual padj
+  res_df$padj_manual <- p.adjust(res_df$pvalue, method = "BH")
+  res_df$padj_manual_noNA <- ifelse(is.na(res_df$padj_manual), 1, res_df$padj_manual)
+  res_df <- res_df[, c("gene_symbol", setdiff(colnames(res_df), "gene_symbol"))]
+  
+  # Output filename
+  out_file <- file.path(path_results, paste0(contrast_name, "_manual_padj.rds"))
+  
+  saveRDS(res_df, out_file)
+}
+
+```
